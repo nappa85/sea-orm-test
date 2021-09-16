@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future};
+use std::{collections::HashMap, future::Future, pin::Pin};
 
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 
@@ -52,21 +52,61 @@ where
     Ok(iter.map(|y| (y.currency.as_str(), y.amount)).collect())
 }
 
-async fn fake_transaction<'a, C, F, Fut, T, E>(conn: &'a C, callback: F) -> Result<T, E>
-where
-    F: FnOnce(&'a C) -> Fut,
-    Fut: Future<Output=Result<T, E>>,
-{
-    callback(conn).await
+struct FakeTransaction<'x>(&'x DatabaseConnection);
+
+#[async_trait::async_trait]
+impl<'x> ConnectionTrait for FakeTransaction<'x> {
+    fn as_mock_connection(&self) -> &sea_orm::MockDatabaseConnection {
+        self.0.as_mock_connection()
+    }
+
+    async fn execute(&self, stmt: sea_orm::Statement) -> Result<sea_orm::ExecResult, sea_orm::DbErr> {
+        self.0.execute(stmt).await
+    }
+
+    fn get_database_backend(&self) -> sea_orm::DbBackend {
+        self.0.get_database_backend()
+    }
+
+    fn into_transaction_log(&self) -> Vec<sea_orm::Transaction> {
+        self.0.into_transaction_log()
+    }
+
+    fn is_mock_connection(&self) -> bool {
+        self.0.is_mock_connection()
+    }
+
+    async fn query_all(&self, stmt: sea_orm::Statement) -> Result<Vec<sea_orm::QueryResult>, sea_orm::DbErr> {
+        self.0.query_all(stmt).await
+    }
+
+    async fn query_one(&self, stmt: sea_orm::Statement) -> Result<Option<sea_orm::QueryResult>, sea_orm::DbErr> {
+        self.0.query_one(stmt).await
+    }
+
+    async fn transaction<'a, F, T, E>(&self, callback: F) -> Result<T, sea_orm::TransactionError<E>>
+    where
+            F: for<'c> FnOnce(&'c sea_orm::DatabaseTransaction<'_>) -> std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'c>> + 'a + Send + Sync,
+            T: Send,
+            E: std::error::Error + Send {
+        self.0.transaction(callback).await
+    }
 }
 
-async fn transaction_nightmare<'a>(yaddayadda: &'a [Yadda]) -> Result<HashMap<&'a str, Money>, ()> {
-    let conn = get_conn().await;
-    let (foo, bar) = fake_transaction::<_, _, _, _, VoidError>(&conn, |txn| async move {
+async fn fake_transaction<'a, F, T, E>(conn: &'a DatabaseConnection, callback: F) -> Result<T, E>
+where
+    F: for<'b> FnOnce(&'b FakeTransaction<'a>) -> Pin<Box<dyn Future<Output=Result<T, E>> + 'b>>,
+{
+    let transaction = FakeTransaction(conn);
+    callback(&transaction).await
+}
+
+async fn transaction_nightmare<'a>(conn: &'a DatabaseConnection, yaddayadda: &'a [Yadda]) -> Result<HashMap<&'a str, Money>, ()> {
+    let (foo, bar) = fake_transaction::<'a, _, _, VoidError>(&conn, |txn| Box::pin(async move {
         let foo = do_something_with_ref(txn, yaddayadda.iter()).await?;
         let bar = do_something_else_with_ref(txn, yaddayadda.iter()).await?;
         Ok((foo, bar))
-    }).await
+    })).await
         .map_err(|e| eprintln!("{}", e))?;
     let mut res = HashMap::new();
     for (k, v) in foo.into_iter().chain(bar.into_iter()) {
@@ -79,5 +119,6 @@ async fn transaction_nightmare<'a>(yaddayadda: &'a [Yadda]) -> Result<HashMap<&'
 #[tokio::main]
 async fn main() {
     let temp = vec![];
-    transaction_nightmare(&temp).await.unwrap();
+    let conn = get_conn().await;
+    transaction_nightmare(&conn, &temp).await.unwrap();
 }
