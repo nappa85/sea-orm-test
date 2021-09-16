@@ -52,17 +52,59 @@ where
     Ok(iter.map(|y| (y.currency.as_str(), y.amount)).collect())
 }
 
-async fn fake_transaction<'a, C, F, Fut, T, E>(conn: &'a C, callback: F) -> Result<T, E>
+struct FakeTransaction<'x>(&'x DatabaseConnection);
+
+#[async_trait::async_trait]
+impl<'x> ConnectionTrait for FakeTransaction<'x> {
+    fn as_mock_connection(&self) -> &sea_orm::MockDatabaseConnection {
+        self.0.as_mock_connection()
+    }
+
+    async fn execute(&self, stmt: sea_orm::Statement) -> Result<sea_orm::ExecResult, sea_orm::DbErr> {
+        self.0.execute(stmt).await
+    }
+
+    fn get_database_backend(&self) -> sea_orm::DbBackend {
+        self.0.get_database_backend()
+    }
+
+    fn into_transaction_log(&self) -> Vec<sea_orm::Transaction> {
+        self.0.into_transaction_log()
+    }
+
+    fn is_mock_connection(&self) -> bool {
+        self.0.is_mock_connection()
+    }
+
+    async fn query_all(&self, stmt: sea_orm::Statement) -> Result<Vec<sea_orm::QueryResult>, sea_orm::DbErr> {
+        self.0.query_all(stmt).await
+    }
+
+    async fn query_one(&self, stmt: sea_orm::Statement) -> Result<Option<sea_orm::QueryResult>, sea_orm::DbErr> {
+        self.0.query_one(stmt).await
+    }
+
+    async fn transaction<'a, F, T, E>(&self, callback: F) -> Result<T, sea_orm::TransactionError<E>>
+    where
+            F: for<'c> FnOnce(&'c sea_orm::DatabaseTransaction<'_>) -> std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'c>> + 'a + Send + Sync,
+            T: Send,
+            E: std::error::Error + Send {
+        self.0.transaction(callback).await
+    }
+}
+
+async fn fake_transaction<'a: 'b, 'b, F, Fut, T, E>(conn: &'a DatabaseConnection, callback: F) -> Result<T, E>
 where
-    F: FnOnce(&'a C) -> Fut,
-    Fut: Future<Output=Result<T, E>>,
+    F: FnOnce(&'b FakeTransaction<'a>) -> Fut + 'a,
+    Fut: Future<Output=Result<T, E>> + 'b,
 {
-    callback(conn).await
+    let transaction = FakeTransaction(conn);
+    callback(&transaction).await
 }
 
 async fn transaction_nightmare<'a>(yaddayadda: &'a [Yadda]) -> Result<HashMap<&'a str, Money>, ()> {
     let conn = get_conn().await;
-    let (foo, bar) = fake_transaction::<_, _, _, _, VoidError>(&conn, |txn| async move {
+    let (foo, bar) = fake_transaction::<_, _, _, VoidError>(&conn, |txn| async move {
         let foo = do_something_with_ref(txn, yaddayadda.iter()).await?;
         let bar = do_something_else_with_ref(txn, yaddayadda.iter()).await?;
         Ok((foo, bar))

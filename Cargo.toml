@@ -8,3 +8,4 @@ edition = "2018"
 [dependencies]
 sea-orm = { git = "https://github.com/nappa85/sea-orm.git", branch = "test", features = ["sqlx-mysql", "runtime-tokio-rustls"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "fs", "signal", "sync"] }
+async-trait = "0.1"
