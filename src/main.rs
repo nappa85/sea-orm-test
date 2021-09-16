@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future};
 
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 
@@ -52,15 +52,23 @@ where
     Ok(iter.map(|y| (y.currency.as_str(), y.amount)).collect())
 }
 
+async fn fake_transaction<'a, C, F, Fut, T, E>(conn: &'a C, callback: F) -> Result<T, E>
+where
+    F: FnOnce(&'a C) -> Fut,
+    Fut: Future<Output=Result<T, E>>,
+{
+    callback(conn).await
+}
+
 async fn transaction_nightmare<'a>(yaddayadda: &'a [Yadda]) -> Result<HashMap<&'a str, Money>, ()> {
     let conn = get_conn().await;
-    let (foo, bar) = conn.transaction::<_, _, VoidError>(|txn| Box::pin(async move {
+    let (foo, bar) = fake_transaction::<_, _, _, _, VoidError>(&conn, |txn| async move {
         let foo = do_something_with_ref(txn, yaddayadda.iter()).await?;
         let bar = do_something_else_with_ref(txn, yaddayadda.iter()).await?;
         Ok((foo, bar))
-    })).await
+    }).await
         .map_err(|e| eprintln!("{}", e))?;
-    let res = HashMap::new();
+    let mut res = HashMap::new();
     for (k, v) in foo.into_iter().chain(bar.into_iter()) {
         let entry = res.entry(k).or_insert(0.0);
         *entry += v;
@@ -71,5 +79,5 @@ async fn transaction_nightmare<'a>(yaddayadda: &'a [Yadda]) -> Result<HashMap<&'
 #[tokio::main]
 async fn main() {
     let temp = vec![];
-    transaction_nightmare(&temp).await;
+    transaction_nightmare(&temp).await.unwrap();
 }
