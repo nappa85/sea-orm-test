@@ -1,0 +1,10 @@
+[package]
+name = "sea-orm-test"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sea-orm = { git = "https://github.com/nappa85/sea-orm.git", branch = "test", features = ["sqlx-mysql", "runtime-tokio-rustls"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "fs", "signal", "sync"] }
